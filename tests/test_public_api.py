@@ -10,31 +10,28 @@ class PublicAPITests(unittest.TestCase):
         self.assertTrue(callable(agentguard.verify_claim))
         self.assertTrue(callable(agentguard.verify_from_sqlite))
         self.assertTrue(callable(agentguard.record_booking))
+        self.assertTrue(callable(agentguard.EvidenceRecord))
         self.assertEqual(agentguard.__version__, "0.1.0")
 
     def test_public_verification_function(self):
+        evidence = agentguard.EvidenceRecord(
+            action_id="task-1",
+            source="task-database",
+            record_id="record-1",
+            observed_state="completed",
+        )
         result = agentguard.verify_claim(
             {
                 "action_id": "task-1",
                 "claimed_state": "completed",
             },
-            [
-                {
-                    "action_id": "task-1",
-                    "source": "task-database",
-                    "record_id": "record-1",
-                    "observed_state": "completed",
-                    "independent": True,
-                    "trusted": True,
-                }
-            ],
+            [evidence],
         )
         self.assertEqual(result["verdict"], "VERIFIED")
 
     def test_public_sqlite_integration(self):
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "test.db"
-
             agentguard.record_booking(
                 db_path, "booking-1", "record-1", "failed"
             )
@@ -45,7 +42,6 @@ class PublicAPITests(unittest.TestCase):
                 },
                 db_path,
             )
-
             self.assertEqual(result["verdict"], "FAILED")
             self.assertEqual(
                 result["evidence_used"][0]["record_id"], "record-1"

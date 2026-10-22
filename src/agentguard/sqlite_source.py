@@ -1,10 +1,10 @@
-"""SQLite-backed independent evidence source for AgentGuard demos."""
+"""SQLite-backed evidence source for AgentGuard demos."""
 
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .core import verify_claim
+from .core import EvidenceRecord, verify_claim
 
 
 def initialize_database(db_path: str | Path) -> None:
@@ -26,8 +26,10 @@ def record_booking(
     state: str,
 ) -> None:
     """Write the state held by the controlled booking application."""
-    if not all(isinstance(value, str) and value.strip()
-               for value in (action_id, record_id, state)):
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (action_id, record_id, state)
+    ):
         raise ValueError("action_id, record_id and state must be non-empty")
 
     initialize_database(db_path)
@@ -48,14 +50,14 @@ def verify_from_sqlite(
     claim: dict[str, Any],
     db_path: str | Path,
 ) -> dict[str, Any]:
-    """Read the application's record, then independently evaluate the claim."""
+    """Read a booking record and verify the claim against it."""
     action_id = claim.get("action_id")
     if not isinstance(action_id, str) or not action_id.strip():
         raise ValueError("claim requires a non-empty action_id")
 
-    if not Path(db_path).is_file():
-        evidence = []
-    else:
+    evidence: list[EvidenceRecord] = []
+
+    if Path(db_path).is_file():
         with sqlite3.connect(db_path) as connection:
             row = connection.execute(
                 """
@@ -66,15 +68,14 @@ def verify_from_sqlite(
                 (action_id,),
             ).fetchone()
 
-        evidence = []
         if row:
-            evidence.append({
-                "action_id": row[0],
-                "record_id": row[1],
-                "observed_state": row[2],
-                "source": "sqlite-booking-database",
-                "independent": True,
-                "trusted": True,
-            })
+            evidence.append(
+                EvidenceRecord(
+                    action_id=row[0],
+                    record_id=row[1],
+                    observed_state=row[2],
+                    source="sqlite-booking-database",
+                )
+            )
 
     return verify_claim(claim, evidence)

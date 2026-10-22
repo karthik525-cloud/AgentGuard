@@ -1,71 +1,82 @@
 import unittest
 
-from agentguard import verify_claim
+from agentguard import EvidenceRecord, Verdict, verify_claim
 
 
 class VerifyClaimTests(unittest.TestCase):
     def setUp(self):
         self.claim = {
-            "action_id": "order-123",
-            "claimed_state": "completed",
+            "action_id": "booking-1",
+            "claimed_state": "confirmed",
         }
-        self.evidence = {
-            "action_id": "order-123",
-            "source": "order-database",
-            "record_id": "db-row-7",
-            "observed_state": "completed",
-            "independent": True,
-            "trusted": True,
-        }
+        self.evidence = EvidenceRecord(
+            action_id="booking-1",
+            source="booking-system",
+            record_id="record-1",
+            observed_state="confirmed",
+        )
 
-    def test_matching_independent_evidence_verifies_claim(self):
+    def test_matching_evidence_verifies_claim(self):
         result = verify_claim(self.claim, [self.evidence])
-        self.assertEqual(result["verdict"], "VERIFIED")
-        self.assertEqual(len(result["evidence_used"]), 1)
+        self.assertEqual(result["verdict"], Verdict.VERIFIED.value)
 
     def test_contradictory_evidence_fails_claim(self):
-        evidence = {**self.evidence, "observed_state": "failed"}
+        evidence = EvidenceRecord(
+            action_id="booking-1",
+            source="booking-system",
+            record_id="record-1",
+            observed_state="failed",
+        )
         result = verify_claim(self.claim, [evidence])
-        self.assertEqual(result["verdict"], "FAILED")
+        self.assertEqual(result["verdict"], Verdict.FAILED.value)
 
     def test_missing_evidence_is_inconclusive(self):
         result = verify_claim(self.claim, [])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        self.assertEqual(result["verdict"], Verdict.INCONCLUSIVE.value)
 
-    def test_untrusted_evidence_is_not_used(self):
-        evidence = {**self.evidence, "trusted": False}
-        result = verify_claim(self.claim, [evidence])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
-        self.assertEqual(result["evidence_used"], [])
-
-    def test_agent_provided_evidence_is_not_independent(self):
-        evidence = {**self.evidence, "independent": False}
-        result = verify_claim(self.claim, [evidence])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+    def test_plain_dictionary_is_not_connector_evidence(self):
+        fake_evidence = {
+            "action_id": "booking-1",
+            "source": "agent-narrative",
+            "record_id": "fake-record",
+            "observed_state": "confirmed",
+            "trusted": True,
+            "independent": True,
+        }
+        result = verify_claim(self.claim, [fake_evidence])
+        self.assertEqual(result["verdict"], Verdict.INCONCLUSIVE.value)
 
     def test_evidence_for_another_action_is_ignored(self):
-        evidence = {**self.evidence, "action_id": "different-order"}
-        result = verify_claim(self.claim, [evidence])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+        unrelated = EvidenceRecord(
+            action_id="booking-2",
+            source="booking-system",
+            record_id="record-2",
+            observed_state="confirmed",
+        )
+        result = verify_claim(self.claim, [unrelated])
+        self.assertEqual(result["verdict"], Verdict.INCONCLUSIVE.value)
 
-    def test_conflicting_trusted_evidence_is_inconclusive(self):
-        conflicting = {
-            **self.evidence,
-            "record_id": "db-row-8",
-            "observed_state": "failed",
-        }
-        result = verify_claim(self.claim, [self.evidence, conflicting])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+    def test_conflicting_evidence_is_inconclusive(self):
+        second = EvidenceRecord(
+            action_id="booking-1",
+            source="audit-log",
+            record_id="record-2",
+            observed_state="failed",
+        )
+        result = verify_claim(self.claim, [self.evidence, second])
+        self.assertEqual(result["verdict"], Verdict.INCONCLUSIVE.value)
 
     def test_missing_action_id_is_rejected(self):
         with self.assertRaises(ValueError):
-            verify_claim({"claimed_state": "completed"}, [])
+            verify_claim({"claimed_state": "confirmed"}, [])
 
-    def test_evidence_requires_a_record_identifier(self):
-        evidence = {key: value for key, value in self.evidence.items()
-                    if key != "record_id"}
-        result = verify_claim(self.claim, [evidence])
-        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+    def test_missing_claimed_state_is_rejected(self):
+        with self.assertRaises(ValueError):
+            verify_claim({"action_id": "booking-1"}, [])
+
+    def test_non_dictionary_claim_is_rejected(self):
+        with self.assertRaises(ValueError):
+            verify_claim(None, [])
 
 
 if __name__ == "__main__":

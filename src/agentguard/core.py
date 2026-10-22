@@ -1,5 +1,6 @@
-"""Deterministic verification of agent claims against independent evidence."""
+"""Deterministic verification of agent claims against connector evidence."""
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -10,15 +11,27 @@ class Verdict(str, Enum):
     INCONCLUSIVE = "INCONCLUSIVE"
 
 
+@dataclass(frozen=True)
+class EvidenceRecord:
+    """Evidence produced by a connector, not directly by an AI agent.
+
+    This type makes the intended trust boundary explicit. It is not, by
+    itself, cryptographic proof that a connector or record is trustworthy.
+    """
+    action_id: str
+    source: str
+    record_id: str
+    observed_state: str
+
+
 def verify_claim(
     claim: dict[str, Any],
-    evidence: list[dict[str, Any]],
+    evidence: list[EvidenceRecord],
 ) -> dict[str, Any]:
-    """Verify a claim using trusted, independent evidence for the same action.
+    """Compare a claim with evidence records supplied by a trusted caller."""
+    if not isinstance(claim, dict):
+        raise ValueError("claim must be a dictionary")
 
-    Evidence trust flags must be assigned by a trusted integration, never
-    accepted directly from an AI agent's own narrative.
-    """
     action_id = claim.get("action_id")
     claimed_state = claim.get("claimed_state")
 
@@ -31,46 +44,43 @@ def verify_claim(
 
     usable = [
         item for item in evidence
-        if isinstance(item, dict)
-        and item.get("action_id") == action_id
-        and item.get("independent") is True
-        and item.get("trusted") is True
-        and isinstance(item.get("observed_state"), str)
-        and item.get("observed_state", "").strip()
-        and isinstance(item.get("source"), str)
-        and item.get("source", "").strip()
-        and isinstance(item.get("record_id"), str)
-        and item.get("record_id", "").strip()
+        if isinstance(item, EvidenceRecord)
+        and item.action_id == action_id
+        and isinstance(item.observed_state, str)
+        and item.observed_state.strip()
+        and isinstance(item.source, str)
+        and item.source.strip()
+        and isinstance(item.record_id, str)
+        and item.record_id.strip()
     ]
 
     used = [
         {
-            "source": item["source"],
-            "record_id": item["record_id"],
-            "observed_state": item["observed_state"],
+            "source": item.source,
+            "record_id": item.record_id,
+            "observed_state": item.observed_state,
         }
         for item in usable
     ]
 
     if not usable:
         verdict = Verdict.INCONCLUSIVE
-        reason = "No trusted independent evidence was available for this action."
-
+        reason = "No connector evidence was available for this action."
     else:
-        observed_states = {item["observed_state"] for item in usable}
+        observed_states = {item.observed_state for item in usable}
 
         if len(observed_states) != 1:
             verdict = Verdict.INCONCLUSIVE
-            reason = "Trusted evidence conflicts about the actual outcome."
+            reason = "Evidence conflicts about the actual outcome."
         else:
             actual_state = next(iter(observed_states))
             if actual_state == claimed_state:
                 verdict = Verdict.VERIFIED
-                reason = "Trusted independent evidence supports the claimed outcome."
+                reason = "Connector evidence supports the claimed outcome."
             else:
                 verdict = Verdict.FAILED
                 reason = (
-                    f"The agent claimed '{claimed_state}', but trusted evidence "
+                    f"The agent claimed '{claimed_state}', but evidence "
                     f"reports '{actual_state}'."
                 )
 
