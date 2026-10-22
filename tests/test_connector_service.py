@@ -51,17 +51,27 @@ class ConnectorServiceTests(unittest.TestCase):
             self.temp_dir.cleanup()
 
     def run_service(self, request):
-        return subprocess.run(
+        return self.run_service_bytes(
+            (json.dumps(request) + "\n").encode("utf-8")
+        )
+
+    def run_service_bytes(self, payload):
+        result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "agentguard.connector_service",
             ],
-            input=json.dumps(request) + "\n",
-            text=True,
+            input=payload,
             capture_output=True,
             env=self.env,
             check=False,
+        )
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            result.stdout.decode("utf-8"),
+            result.stderr.decode("utf-8"),
         )
 
     def test_service_returns_signed_booking_evidence(self):
@@ -107,6 +117,104 @@ class ConnectorServiceTests(unittest.TestCase):
         self.assertEqual(
             response["error"],
             "Authorization policy is missing.",
+        )
+
+    def test_service_rejects_empty_input(self):
+        result = self.run_service_bytes(b"")
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(response["error"], "Request is empty")
+
+    def test_service_rejects_malformed_json(self):
+        result = self.run_service_bytes(b"{not-json}\n")
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request contains invalid JSON.",
+        )
+
+    def test_service_rejects_non_object_json(self):
+        result = self.run_service_bytes(b'["booking-service-1"]\n')
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request must be a JSON object",
+        )
+
+    def test_service_rejects_unexpected_fields(self):
+        result = self.run_service(
+            {
+                "action_id": "booking-service-1",
+                "extra": "field",
+            }
+        )
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request must contain only the action_id field",
+        )
+
+    def test_service_rejects_oversized_input(self):
+        result = self.run_service_bytes(b"x" * 1025)
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request exceeds the size limit",
+        )
+
+    def test_service_rejects_oversized_multibyte_utf8_input(self):
+        # 513 two-byte characters are 1026 bytes, but under 1024 characters.
+        result = self.run_service_bytes("é".encode("utf-8") * 513)
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request exceeds the size limit",
+        )
+
+    def test_service_rejects_action_id_longer_than_200_characters(self):
+        result = self.run_service({"action_id": "a" * 201})
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "action_id must be a non-empty string of at most 200 characters",
+        )
+
+    def test_service_rejects_action_id_with_surrounding_whitespace(self):
+        result = self.run_service(
+            {"action_id": " booking-service-1 "}
+        )
+
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "action_id must be a non-empty string of at most 200 characters",
+        )
+
+    def test_service_accepts_valid_request_without_trailing_newline(self):
+        result = self.run_service_bytes(
+            json.dumps({"action_id": "booking-service-1"}).encode("utf-8")
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        response = json.loads(result.stdout)
+        self.assertTrue(response["found"])
+        self.assertTrue(
+            verify_signed_evidence(response["envelope"], self.key),
+            "Connector returned an invalid signature",
         )
 
 
