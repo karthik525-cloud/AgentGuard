@@ -1,0 +1,16 @@
+{
+  "claim": {
+    "action_id": "booking-1042",
+    "claimed_state": "confirmed"
+  },
+  "evidence": [
+    {
+      "action_id": "booking-1042",
+      "source": "booking-system",
+      "record_id": "reservation-7781",
+      "observed_state": "failed",
+      "independent": true,
+      "trusted": true
+    }
+  ]
+}
