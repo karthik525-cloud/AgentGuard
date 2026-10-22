@@ -16,62 +16,98 @@ TEST_ACCOUNT = "agentguard-connector-tests"
 
 
 class ConnectorServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.key = os.urandom(32)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "bookings.db"
+
+        record_booking(
+            self.db_path,
+            "booking-service-1",
+            "record-service-1",
+            "confirmed",
+        )
+
+        store_key(
+            self.key,
+            service=TEST_SERVICE,
+            account=TEST_ACCOUNT,
+        )
+
+        self.env = os.environ.copy()
+        self.env["PYTHONPATH"] = str(
+            Path(__file__).resolve().parents[1] / "src"
+        )
+        self.env["AGENTGUARD_DB_PATH"] = str(self.db_path)
+        self.env["AGENTGUARD_KEYCHAIN_SERVICE"] = TEST_SERVICE
+        self.env["AGENTGUARD_KEYCHAIN_ACCOUNT"] = TEST_ACCOUNT
+        self.env["AGENTGUARD_ALLOWED_ACTION_IDS"] = "booking-service-1"
+        self.env.pop("AGENTGUARD_SIGNING_KEY", None)
+
+    def tearDown(self):
+        try:
+            delete_key(service=TEST_SERVICE, account=TEST_ACCOUNT)
+        finally:
+            self.temp_dir.cleanup()
+
+    def run_service(self, request):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "agentguard.connector_service",
+            ],
+            input=json.dumps(request) + "\n",
+            text=True,
+            capture_output=True,
+            env=self.env,
+            check=False,
+        )
+
     def test_service_returns_signed_booking_evidence(self):
-        key = os.urandom(32)
+        result = self.run_service(
+            {"action_id": "booking-service-1"}
+        )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "bookings.db"
+        self.assertEqual(result.returncode, 0, result.stderr)
+        response = json.loads(result.stdout)
+        self.assertTrue(response["found"])
 
-            record_booking(
-                db_path,
-                "booking-service-1",
-                "record-service-1",
-                "confirmed",
-            )
+        envelope = response["envelope"]
+        self.assertEqual(
+            envelope["evidence"]["observed_state"],
+            "confirmed",
+        )
+        self.assertTrue(
+            verify_signed_evidence(envelope, self.key),
+            "Connector returned an invalid signature",
+        )
 
-            try:
-                store_key(key, service=TEST_SERVICE, account=TEST_ACCOUNT)
+    def test_service_rejects_unauthorized_action(self):
+        result = self.run_service(
+            {"action_id": "booking-not-allowed"}
+        )
 
-                env = os.environ.copy()
-                env["PYTHONPATH"] = str(
-                    Path(__file__).resolve().parents[1] / "src"
-                )
-                env["AGENTGUARD_DB_PATH"] = str(db_path)
-                env["AGENTGUARD_KEYCHAIN_SERVICE"] = TEST_SERVICE
-                env["AGENTGUARD_KEYCHAIN_ACCOUNT"] = TEST_ACCOUNT
-                env.pop("AGENTGUARD_SIGNING_KEY", None)
+        self.assertEqual(result.returncode, 1)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Request is not authorized for this action.",
+        )
 
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "agentguard.connector_service",
-                    ],
-                    input=json.dumps(
-                        {"action_id": "booking-service-1"}
-                    ) + "\n",
-                    text=True,
-                    capture_output=True,
-                    env=env,
-                    check=False,
-                )
+    def test_service_fails_when_authorization_policy_is_missing(self):
+        self.env.pop("AGENTGUARD_ALLOWED_ACTION_IDS", None)
 
-                self.assertEqual(result.returncode, 0, result.stderr)
-                response = json.loads(result.stdout)
-                self.assertTrue(response["found"])
+        result = self.run_service(
+            {"action_id": "booking-service-1"}
+        )
 
-                envelope = response["envelope"]
-                self.assertEqual(
-                    envelope["evidence"]["observed_state"],
-                    "confirmed",
-                )
-                self.assertTrue(
-                    verify_signed_evidence(envelope, key),
-                    "Connector returned an invalid signature",
-                )
-
-            finally:
-                delete_key(service=TEST_SERVICE, account=TEST_ACCOUNT)
+        self.assertEqual(result.returncode, 2)
+        response = json.loads(result.stderr)
+        self.assertEqual(
+            response["error"],
+            "Authorization policy is missing.",
+        )
 
 
 if __name__ == "__main__":
