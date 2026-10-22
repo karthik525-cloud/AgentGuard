@@ -1,42 +1,40 @@
 
-"""Local trusted connector service for AgentGuard."""
+"""Local connector service for AgentGuard."""
 
 import json
 import os
 import sys
 from pathlib import Path
 
+from .keychain_store import (
+    DEFAULT_ACCOUNT,
+    DEFAULT_SERVICE,
+    load_key,
+)
 from .trusted_connector import read_and_sign_booking
 
 
 def main() -> int:
     db_path = os.environ.get("AGENTGUARD_DB_PATH")
-    key_hex = os.environ.get("AGENTGUARD_SIGNING_KEY")
+    service = os.environ.get("AGENTGUARD_KEYCHAIN_SERVICE", DEFAULT_SERVICE)
+    account = os.environ.get("AGENTGUARD_KEYCHAIN_ACCOUNT", DEFAULT_ACCOUNT)
 
-    if not db_path or not key_hex:
+    if not db_path:
         print(
-            json.dumps({"error": "Connector configuration is missing."}),
+            json.dumps({"error": "Database configuration is missing."}),
             file=sys.stderr,
         )
         return 2
 
     try:
-        secret_key = bytes.fromhex(key_hex)
-    except ValueError:
+        secret_key = load_key(service=service, account=account)
+    except RuntimeError:
         print(
-            json.dumps({"error": "Signing key must be valid hexadecimal."}),
+            json.dumps({"error": "Could not load signing key from Keychain."}),
             file=sys.stderr,
         )
         return 2
 
-    if len(secret_key) < 32:
-        print(
-            json.dumps({"error": "Signing key must be at least 32 bytes."}),
-            file=sys.stderr,
-        )
-        return 2
-
-    # Accept one JSON request from standard input.
     try:
         request = json.loads(sys.stdin.readline())
         if not isinstance(request, dict):
