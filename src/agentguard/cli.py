@@ -5,8 +5,58 @@ import json
 import sys
 from pathlib import Path
 
-from .core import verify_claim
+from .core import EvidenceRecord, verify_claim
 from .sqlite_source import verify_from_sqlite
+
+REQUIRED_EVIDENCE_FIELDS = (
+    "action_id",
+    "source",
+    "record_id",
+    "observed_state",
+)
+
+
+def evidence_records_from_scenario(payload: object) -> tuple[object, list[EvidenceRecord]]:
+    """Parse a local JSON scenario into claim data and EvidenceRecord objects.
+
+    JSON scenarios are demo/test input. The trusted/independent flags are
+    ignored and are not treated as authentication.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Scenario must be a JSON object")
+    if "claim" not in payload:
+        raise ValueError("Scenario is missing the claim field")
+    if "evidence" not in payload:
+        raise ValueError("Scenario is missing the evidence field")
+
+    raw_evidence = payload["evidence"]
+    if not isinstance(raw_evidence, list):
+        raise ValueError("evidence must be a list")
+
+    records: list[EvidenceRecord] = []
+    for item in raw_evidence:
+        if not isinstance(item, dict):
+            raise ValueError("Each evidence item must be a JSON object")
+
+        values: dict[str, str] = {}
+        for field in REQUIRED_EVIDENCE_FIELDS:
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Evidence is missing required field: {field}"
+                )
+            values[field] = value
+
+        records.append(
+            EvidenceRecord(
+                action_id=values["action_id"],
+                source=values["source"],
+                record_id=values["record_id"],
+                observed_state=values["observed_state"],
+            )
+        )
+
+    return payload["claim"], records
 
 
 def main() -> int:
@@ -44,7 +94,8 @@ def main() -> int:
     try:
         if args.command == "json":
             payload = json.loads(args.scenario.read_text(encoding="utf-8"))
-            result = verify_claim(payload["claim"], payload["evidence"])
+            claim, evidence = evidence_records_from_scenario(payload)
+            result = verify_claim(claim, evidence)
         else:
             claim = {
                 "action_id": args.action_id,
