@@ -1,17 +1,15 @@
-"""HMAC integrity checks for connector evidence envelopes.
 
-Prototype only: the signing key must be kept secret and controlled by the
-trusted connector. This does not prove that the original source data is true.
-"""
+"""HMAC signing and freshness validation for AgentGuard evidence."""
 
 import hashlib
 import hmac
 import json
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 
 def _canonical_bytes(payload: dict[str, Any]) -> bytes:
-    """Serialize evidence consistently before signing or verifying."""
     return json.dumps(
         payload,
         sort_keys=True,
@@ -24,19 +22,17 @@ def sign_evidence(
     evidence: dict[str, Any],
     secret_key: bytes,
 ) -> dict[str, Any]:
-    """Return an evidence envelope with an HMAC-SHA256 signature."""
     if not isinstance(secret_key, bytes) or len(secret_key) < 32:
         raise ValueError("secret_key must contain at least 32 bytes")
     if not isinstance(evidence, dict):
         raise ValueError("evidence must be a dictionary")
 
     payload = dict(evidence)
-    signature = hmac.new(
-        secret_key,
-        _canonical_bytes(payload),
-        hashlib.sha256,
-    ).hexdigest()
+    payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
 
+    signature = hmac.new(
+        secret_key, _canonical_bytes(payload), hashlib.sha256
+    ).hexdigest()
     return {"evidence": payload, "signature": signature}
 
 
@@ -44,7 +40,6 @@ def verify_signed_evidence(
     envelope: dict[str, Any],
     secret_key: bytes,
 ) -> bool:
-    """Check whether the envelope signature matches its evidence payload."""
     if not isinstance(secret_key, bytes) or len(secret_key) < 32:
         raise ValueError("secret_key must contain at least 32 bytes")
     if not isinstance(envelope, dict):
@@ -56,12 +51,36 @@ def verify_signed_evidence(
         return False
 
     expected = hmac.new(
-        secret_key,
-        _canonical_bytes(payload),
-        hashlib.sha256,
+        secret_key, _canonical_bytes(payload), hashlib.sha256
     ).hexdigest()
-
     return hmac.compare_digest(expected, signature)
+
+
+def is_evidence_fresh(
+    envelope: dict[str, Any],
+    secret_key: bytes,
+    *,
+    max_age_seconds: int = 300,
+    clock_skew_seconds: int = 30,
+) -> bool:
+    if max_age_seconds < 0 or clock_skew_seconds < 0:
+        raise ValueError("Age and clock-skew limits cannot be negative")
+    if not verify_signed_evidence(envelope, secret_key):
+        return False
+
+    timestamp = envelope["evidence"].get("timestamp")
+    if not isinstance(timestamp, str):
+        return False
+
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+        if parsed.tzinfo is None:
+            return False
+        age = time.time() - parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return False
+
+    return -clock_skew_seconds <= age <= max_age_seconds
 
 
 def verify_signed_claim(
@@ -69,17 +88,15 @@ def verify_signed_claim(
     envelopes: list[dict[str, Any]],
     secret_key: bytes,
 ) -> dict[str, Any]:
-    """Verify signed evidence before using it to evaluate a claim."""
+    """Use only correctly signed, fresh evidence to evaluate a claim."""
     from .core import EvidenceRecord, verify_claim
 
     evidence_records = []
-
     for envelope in envelopes:
-        if not verify_signed_evidence(envelope, secret_key):
+        if not is_evidence_fresh(envelope, secret_key):
             continue
 
         payload = envelope["evidence"]
-
         try:
             record = EvidenceRecord(
                 action_id=payload["action_id"],

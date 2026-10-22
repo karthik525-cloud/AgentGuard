@@ -1,4 +1,6 @@
+
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from agentguard import sign_evidence, verify_signed_claim
 
@@ -52,6 +54,17 @@ class SignedClaimTests(unittest.TestCase):
         )
         self.assertEqual(result["verdict"], "VERIFIED")
         self.assertEqual(len(result["evidence_used"]), 1)
+
+    def test_expired_signed_evidence_is_inconclusive(self):
+        old_timestamp = (
+            datetime.now(timezone.utc) - timedelta(minutes=10)
+        ).isoformat()
+        evidence = dict(self.evidence, timestamp=old_timestamp)
+        envelope = sign_evidence(evidence, self.key)
+
+        result = verify_signed_claim(self.claim, [envelope], self.key)
+
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
 
 
 if __name__ == "__main__":
