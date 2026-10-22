@@ -79,3 +79,40 @@ def verify_from_sqlite(
             )
 
     return verify_claim(claim, evidence)
+
+
+def verify_signed_from_sqlite(
+    claim: dict[str, Any],
+    db_path: str | Path,
+    secret_key: bytes,
+) -> dict[str, Any]:
+    """Verify a claim using signed evidence read from SQLite."""
+    from .evidence_signing import sign_evidence, verify_signed_claim
+
+    action_id = claim.get("action_id")
+    if not isinstance(action_id, str) or not action_id.strip():
+        raise ValueError("claim requires a non-empty action_id")
+
+    evidence_envelopes = []
+
+    if Path(db_path).is_file():
+        with sqlite3.connect(db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT action_id, record_id, state
+                FROM bookings
+                WHERE action_id = ?
+                """,
+                (action_id,),
+            ).fetchone()
+
+        if row:
+            evidence = {
+                "action_id": row[0],
+                "record_id": row[1],
+                "observed_state": row[2],
+                "source": "sqlite-booking-database",
+            }
+            evidence_envelopes.append(sign_evidence(evidence, secret_key))
+
+    return verify_signed_claim(claim, evidence_envelopes, secret_key)
