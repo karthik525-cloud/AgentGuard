@@ -1,3 +1,4 @@
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +50,43 @@ class TrustedConnectorTests(unittest.TestCase):
         envelope["evidence"]["observed_state"] = "confirmed"
 
         self.assertFalse(verify_signed_evidence(envelope, self.key))
+
+    def test_authorized_action_is_allowed(self):
+        record_booking(
+            self.db_path,
+            "booking-allowed",
+            "record-allowed",
+            "confirmed",
+        )
+
+        envelope = read_and_sign_booking(
+            self.db_path,
+            "booking-allowed",
+            self.key,
+            allowed_action_ids={"booking-allowed"},
+        )
+
+        self.assertIsNotNone(envelope)
+        self.assertTrue(verify_signed_evidence(envelope, self.key))
+        self.assertEqual(
+            envelope["evidence"]["observed_state"], "confirmed"
+        )
+
+    def test_unauthorized_action_is_rejected(self):
+        record_booking(
+            self.db_path,
+            "booking-denied",
+            "record-denied",
+            "confirmed",
+        )
+
+        with self.assertRaises(PermissionError):
+            read_and_sign_booking(
+                self.db_path,
+                "booking-denied",
+                self.key,
+                allowed_action_ids={"another-booking"},
+            )
 
     def test_short_key_is_rejected(self):
         with self.assertRaises(ValueError):
