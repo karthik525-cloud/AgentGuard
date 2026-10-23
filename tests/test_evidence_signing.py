@@ -55,7 +55,9 @@ class EvidenceSigningTests(unittest.TestCase):
         self.assertTrue(is_evidence_fresh(envelope, self.key))
 
     def test_expired_evidence_is_rejected(self):
-        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        old_time = (
+            datetime.now(timezone.utc) - timedelta(minutes=10)
+        ).isoformat()
         envelope = sign_evidence(
             {"action_id": "booking-1", "timestamp": old_time},
             self.key,
@@ -65,20 +67,60 @@ class EvidenceSigningTests(unittest.TestCase):
         )
 
     def test_future_evidence_outside_clock_skew_is_rejected(self):
-        future_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        future_time = (
+            datetime.now(timezone.utc) + timedelta(minutes=5)
+        ).isoformat()
         envelope = sign_evidence(
             {"action_id": "booking-1", "timestamp": future_time},
             self.key,
         )
         self.assertFalse(
             is_evidence_fresh(
-                envelope, self.key, max_age_seconds=300, clock_skew_seconds=30
+                envelope,
+                self.key,
+                max_age_seconds=300,
+                clock_skew_seconds=30,
             )
         )
 
     def test_tampered_evidence_is_not_fresh(self):
         envelope = sign_evidence({"action_id": "booking-1"}, self.key)
         envelope["evidence"]["observed_state"] = "confirmed"
+        self.assertFalse(is_evidence_fresh(envelope, self.key))
+
+    def test_replaced_signature_fails_verification(self):
+        envelope = sign_evidence(
+            {"action_id": "booking-1", "observed_state": "confirmed"},
+            self.key,
+        )
+        envelope["signature"] = "0" * 64
+
+        self.assertFalse(verify_signed_evidence(envelope, self.key))
+
+    def test_signature_from_another_envelope_fails_verification(self):
+        first = sign_evidence(
+            {"action_id": "booking-1", "observed_state": "confirmed"},
+            self.key,
+        )
+        second = sign_evidence(
+            {"action_id": "booking-2", "observed_state": "cancelled"},
+            self.key,
+        )
+
+        first["signature"] = second["signature"]
+
+        self.assertFalse(verify_signed_evidence(first, self.key))
+
+    def test_naive_timestamp_is_rejected(self):
+        naive_timestamp = datetime.now().replace(tzinfo=None).isoformat()
+        envelope = sign_evidence(
+            {
+                "action_id": "booking-1",
+                "timestamp": naive_timestamp,
+            },
+            self.key,
+        )
+
         self.assertFalse(is_evidence_fresh(envelope, self.key))
 
 
