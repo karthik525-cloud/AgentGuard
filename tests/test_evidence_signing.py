@@ -106,6 +106,17 @@ class EvidenceSigningTests(unittest.TestCase):
             )
         )
 
+    def test_non_finite_or_negative_freshness_limits_are_rejected(self):
+        envelope = sign_evidence({"action_id": "booking-1"}, self.key)
+
+        for keyword, value in (
+            ("max_age_seconds", -1),
+            ("clock_skew_seconds", float("nan")),
+        ):
+            with self.subTest(keyword=keyword, value=value):
+                with self.assertRaises(ValueError):
+                    is_evidence_fresh(envelope, self.key, **{keyword: value})
+
     def test_tampered_evidence_is_not_fresh(self):
         envelope = sign_evidence({"action_id": "booking-1"}, self.key)
         envelope["evidence"]["observed_state"] = "confirmed"

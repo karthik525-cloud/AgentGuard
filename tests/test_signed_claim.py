@@ -51,6 +51,14 @@ class SignedClaimTests(unittest.TestCase):
         result = verify_signed_claim(self.claim, [envelope], wrong_key)
         self.assertEqual(result["verdict"], "INCONCLUSIVE")
 
+    def test_short_key_is_rejected_even_without_evidence(self):
+        with self.assertRaises(ValueError):
+            verify_signed_claim(self.claim, [], b"short")
+
+    def test_non_list_envelopes_are_rejected(self):
+        with self.assertRaises(ValueError):
+            verify_signed_claim(self.claim, {}, self.key)
+
     def test_mixed_valid_and_invalid_evidence_ignores_invalid(self):
         valid = sign_evidence(self.evidence, self.key)
         invalid = sign_evidence(

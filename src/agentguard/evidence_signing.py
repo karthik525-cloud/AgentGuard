@@ -4,12 +4,28 @@
 import hashlib
 import hmac
 import json
+import math
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from .replay_store import ReplayDetectedError, SQLiteReplayStore
+
+
+def _validate_secret_key(secret_key: bytes) -> None:
+    if not isinstance(secret_key, bytes) or len(secret_key) < 32:
+        raise ValueError("secret_key must contain at least 32 bytes")
+
+
+def _validate_duration(value: object, name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{name} cannot be negative or non-finite")
 
 
 def _canonical_bytes(payload: dict[str, Any]) -> bytes:
@@ -26,8 +42,7 @@ def sign_evidence(
     evidence: dict[str, Any],
     secret_key: bytes,
 ) -> dict[str, Any]:
-    if not isinstance(secret_key, bytes) or len(secret_key) < 32:
-        raise ValueError("secret_key must contain at least 32 bytes")
+    _validate_secret_key(secret_key)
     if not isinstance(evidence, dict):
         raise ValueError("evidence must be a dictionary")
 
@@ -45,8 +60,7 @@ def verify_signed_evidence(
     envelope: dict[str, Any],
     secret_key: bytes,
 ) -> bool:
-    if not isinstance(secret_key, bytes) or len(secret_key) < 32:
-        raise ValueError("secret_key must contain at least 32 bytes")
+    _validate_secret_key(secret_key)
     if not isinstance(envelope, dict):
         return False
 
@@ -71,8 +85,8 @@ def is_evidence_fresh(
     max_age_seconds: int = 300,
     clock_skew_seconds: int = 30,
 ) -> bool:
-    if max_age_seconds < 0 or clock_skew_seconds < 0:
-        raise ValueError("Age and clock-skew limits cannot be negative")
+    _validate_duration(max_age_seconds, "max_age_seconds")
+    _validate_duration(clock_skew_seconds, "clock_skew_seconds")
     if not verify_signed_evidence(envelope, secret_key):
         return False
 
@@ -110,6 +124,10 @@ def verify_signed_claim(
 ) -> dict[str, Any]:
     """Use only correctly signed, fresh evidence to evaluate a claim."""
     from .core import EvidenceRecord, verify_claim
+
+    _validate_secret_key(secret_key)
+    if not isinstance(envelopes, list):
+        raise ValueError("envelopes must be a list")
 
     evidence_records = []
     for envelope in envelopes:

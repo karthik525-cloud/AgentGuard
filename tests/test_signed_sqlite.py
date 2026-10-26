@@ -48,6 +48,17 @@ class SignedSQLiteTests(unittest.TestCase):
         )
         self.assertEqual(result["verdict"], "INCONCLUSIVE")
 
+    def test_corrupt_database_is_inconclusive(self):
+        self.db_path.write_text("not a SQLite database", encoding="utf-8")
+
+        result = verify_signed_from_sqlite(
+            {"action_id": "booking-1", "claimed_state": "confirmed"},
+            self.db_path,
+            self.key,
+        )
+
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+
     def test_invalid_key_is_rejected(self):
         record_booking(
             self.db_path, "booking-3", "record-3", "confirmed"
@@ -55,6 +66,14 @@ class SignedSQLiteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_signed_from_sqlite(
                 {"action_id": "booking-3", "claimed_state": "confirmed"},
+                self.db_path,
+                b"short",
+            )
+
+    def test_invalid_key_is_rejected_when_no_booking_exists(self):
+        with self.assertRaises(ValueError):
+            verify_signed_from_sqlite(
+                {"action_id": "missing", "claimed_state": "confirmed"},
                 self.db_path,
                 b"short",
             )

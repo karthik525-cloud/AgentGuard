@@ -43,6 +43,16 @@ class SQLiteSourceTests(unittest.TestCase):
         )
         self.assertEqual(result["verdict"], "INCONCLUSIVE")
 
+    def test_corrupt_database_is_inconclusive(self):
+        self.db_path.write_text("not a SQLite database", encoding="utf-8")
+
+        result = verify_from_sqlite(
+            {"action_id": "booking-1", "claimed_state": "confirmed"},
+            self.db_path,
+        )
+
+        self.assertEqual(result["verdict"], "INCONCLUSIVE")
+
     def test_missing_booking_is_inconclusive(self):
         record_booking(
             self.db_path, "another-booking", "row-3", "confirmed"

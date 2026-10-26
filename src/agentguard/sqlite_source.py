@@ -46,6 +46,28 @@ def record_booking(
         )
 
 
+def _read_booking_row(
+    db_path: str | Path,
+    action_id: str,
+) -> tuple[str, str, str] | None:
+    """Read one booking record, treating unavailable evidence as absent."""
+    try:
+        if not Path(db_path).is_file():
+            return None
+
+        with sqlite3.connect(db_path) as connection:
+            return connection.execute(
+                """
+                SELECT action_id, record_id, state
+                FROM bookings
+                WHERE action_id = ?
+                """,
+                (action_id,),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return None
+
+
 def verify_from_sqlite(
     claim: dict[str, Any],
     db_path: str | Path,
@@ -56,27 +78,16 @@ def verify_from_sqlite(
         raise ValueError("claim requires a non-empty action_id")
 
     evidence: list[EvidenceRecord] = []
-
-    if Path(db_path).is_file():
-        with sqlite3.connect(db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT action_id, record_id, state
-                FROM bookings
-                WHERE action_id = ?
-                """,
-                (action_id,),
-            ).fetchone()
-
-        if row:
-            evidence.append(
-                EvidenceRecord(
-                    action_id=row[0],
-                    record_id=row[1],
-                    observed_state=row[2],
-                    source="sqlite-booking-database",
-                )
+    row = _read_booking_row(db_path, action_id)
+    if row:
+        evidence.append(
+            EvidenceRecord(
+                action_id=row[0],
+                record_id=row[1],
+                observed_state=row[2],
+                source="sqlite-booking-database",
             )
+        )
 
     return verify_claim(claim, evidence)
 
@@ -94,25 +105,14 @@ def verify_signed_from_sqlite(
         raise ValueError("claim requires a non-empty action_id")
 
     evidence_envelopes = []
-
-    if Path(db_path).is_file():
-        with sqlite3.connect(db_path) as connection:
-            row = connection.execute(
-                """
-                SELECT action_id, record_id, state
-                FROM bookings
-                WHERE action_id = ?
-                """,
-                (action_id,),
-            ).fetchone()
-
-        if row:
-            evidence = {
-                "action_id": row[0],
-                "record_id": row[1],
-                "observed_state": row[2],
-                "source": "sqlite-booking-database",
-            }
-            evidence_envelopes.append(sign_evidence(evidence, secret_key))
+    row = _read_booking_row(db_path, action_id)
+    if row:
+        evidence = {
+            "action_id": row[0],
+            "record_id": row[1],
+            "observed_state": row[2],
+            "source": "sqlite-booking-database",
+        }
+        evidence_envelopes.append(sign_evidence(evidence, secret_key))
 
     return verify_signed_claim(claim, evidence_envelopes, secret_key)

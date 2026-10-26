@@ -4,7 +4,7 @@ AgentGuard is a small Python security MVP for checking an AI agent's claim
 against independently collected evidence. It demonstrates a practical rule:
 an agent's report is not proof that an operation happened.
 
-The project is intentionally dependency-free and targets Python 3.11 or newer.
+The project has no runtime dependencies and targets Python 3.11 or newer.
 It includes deterministic claim verification, HMAC-signed evidence with
 freshness checks, durable replay protection for one-time workflows, and a
 macOS-only authenticated local connector service.
@@ -68,6 +68,9 @@ one-time protected operation ─> verify_and_consume_claim
   only trusted server-side allowlisted actions.
 - `connector_service.py` exposes that connector over a local Unix-domain
   socket on macOS, with peer-credential authorization.
+
+Missing, unavailable, or corrupt SQLite evidence is treated as absent and
+therefore yields `INCONCLUSIVE`; it never produces a false `VERIFIED` verdict.
 
 ## Security model
 
