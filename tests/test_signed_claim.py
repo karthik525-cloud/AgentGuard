@@ -24,6 +24,15 @@ class SignedClaimTests(unittest.TestCase):
         result = verify_signed_claim(self.claim, [envelope], self.key)
         self.assertEqual(result["verdict"], "VERIFIED")
 
+    def test_read_only_verification_is_repeatable(self):
+        envelope = sign_evidence(self.evidence, self.key)
+
+        first = verify_signed_claim(self.claim, [envelope], self.key)
+        second = verify_signed_claim(self.claim, [envelope], self.key)
+
+        self.assertEqual(first["verdict"], "VERIFIED")
+        self.assertEqual(second["verdict"], "VERIFIED")
+
     def test_signed_contradiction_fails_claim(self):
         evidence = dict(self.evidence, observed_state="failed")
         envelope = sign_evidence(evidence, self.key)

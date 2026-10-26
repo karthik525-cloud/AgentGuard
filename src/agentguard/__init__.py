@@ -5,7 +5,9 @@ from .evidence_signing import (
     sign_evidence,
     verify_signed_evidence,
     verify_signed_claim,
+    verify_and_consume_claim,
 )
+from .replay_store import ReplayDetectedError, SQLiteReplayStore
 from .sqlite_source import (
     record_booking,
     verify_from_sqlite,
@@ -19,6 +21,9 @@ __all__ = [
     "sign_evidence",
     "verify_signed_evidence",
     "verify_signed_claim",
+    "verify_and_consume_claim",
+    "ReplayDetectedError",
+    "SQLiteReplayStore",
     "record_booking",
     "verify_from_sqlite",
     "verify_signed_from_sqlite",

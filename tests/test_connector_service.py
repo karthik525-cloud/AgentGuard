@@ -1,18 +1,15 @@
 
+import io
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agentguard import record_booking, verify_signed_evidence
-from agentguard.keychain_store import store_key, delete_key
-
-
-TEST_SERVICE = "AgentGuard.SigningKey.Tests"
-TEST_ACCOUNT = "agentguard-connector-tests"
+from agentguard.connector_service import main
 
 
 class ConnectorServiceTests(unittest.TestCase):
@@ -28,27 +25,13 @@ class ConnectorServiceTests(unittest.TestCase):
             "confirmed",
         )
 
-        store_key(
-            self.key,
-            service=TEST_SERVICE,
-            account=TEST_ACCOUNT,
-        )
-
         self.env = os.environ.copy()
-        self.env["PYTHONPATH"] = str(
-            Path(__file__).resolve().parents[1] / "src"
-        )
         self.env["AGENTGUARD_DB_PATH"] = str(self.db_path)
-        self.env["AGENTGUARD_KEYCHAIN_SERVICE"] = TEST_SERVICE
-        self.env["AGENTGUARD_KEYCHAIN_ACCOUNT"] = TEST_ACCOUNT
         self.env["AGENTGUARD_ALLOWED_ACTION_IDS"] = "booking-service-1"
         self.env.pop("AGENTGUARD_SIGNING_KEY", None)
 
     def tearDown(self):
-        try:
-            delete_key(service=TEST_SERVICE, account=TEST_ACCOUNT)
-        finally:
-            self.temp_dir.cleanup()
+        self.temp_dir.cleanup()
 
     def run_service(self, request):
         return self.run_service_bytes(
@@ -56,22 +39,24 @@ class ConnectorServiceTests(unittest.TestCase):
         )
 
     def run_service_bytes(self, payload):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "agentguard.connector_service",
-            ],
-            input=payload,
-            capture_output=True,
-            env=self.env,
-            check=False,
-        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        stdin = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8")
+
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch("sys.stdin", stdin),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+            patch("agentguard.connector_service.load_key", return_value=self.key),
+        ):
+            returncode = main()
+
         return subprocess.CompletedProcess(
-            result.args,
-            result.returncode,
-            result.stdout.decode("utf-8"),
-            result.stderr.decode("utf-8"),
+            ["agentguard.connector_service"],
+            returncode,
+            stdout.getvalue(),
+            stderr.getvalue(),
         )
 
     def test_service_returns_signed_booking_evidence(self):

@@ -1,5 +1,6 @@
 
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from agentguard.evidence_signing import (
@@ -19,6 +20,16 @@ class EvidenceSigningTests(unittest.TestCase):
             self.key,
         )
         self.assertTrue(verify_signed_evidence(envelope, self.key))
+
+    def test_new_evidence_has_a_unique_signed_uuid4_id(self):
+        first = sign_evidence({"action_id": "booking-1"}, self.key)
+        second = sign_evidence({"action_id": "booking-1"}, self.key)
+
+        first_id = first["evidence"]["evidence_id"]
+        self.assertNotEqual(first_id, second["evidence"]["evidence_id"])
+        self.assertEqual(uuid.UUID(first_id).version, 4)
+        first["evidence"]["evidence_id"] = str(uuid.uuid4())
+        self.assertFalse(verify_signed_evidence(first, self.key))
 
     def test_wrong_key_fails_verification(self):
         envelope = sign_evidence({"action_id": "booking-1"}, self.key)

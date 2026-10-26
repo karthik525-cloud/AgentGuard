@@ -10,6 +10,9 @@ class PublicAPITests(unittest.TestCase):
         self.assertTrue(callable(agentguard.verify_claim))
         self.assertTrue(callable(agentguard.verify_from_sqlite))
         self.assertTrue(callable(agentguard.record_booking))
+        self.assertTrue(callable(agentguard.verify_and_consume_claim))
+        self.assertTrue(callable(agentguard.SQLiteReplayStore))
+        self.assertTrue(issubclass(agentguard.ReplayDetectedError, RuntimeError))
         self.assertTrue(callable(agentguard.EvidenceRecord))
         self.assertEqual(agentguard.__version__, "0.1.0")
 
