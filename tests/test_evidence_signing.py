@@ -50,6 +50,18 @@ class EvidenceSigningTests(unittest.TestCase):
             )
         )
 
+    def test_non_json_payload_fails_closed_without_raising(self):
+        envelope = {
+            "evidence": {"action_id": "booking-1", "unexpected": object()},
+            "signature": "0" * 64,
+        }
+
+        self.assertFalse(verify_signed_evidence(envelope, self.key))
+
+    def test_non_standard_json_number_is_rejected_when_signing(self):
+        with self.assertRaises(ValueError):
+            sign_evidence({"action_id": "booking-1", "value": float("nan")}, self.key)
+
     def test_short_key_is_rejected(self):
         with self.assertRaises(ValueError):
             sign_evidence({"action_id": "booking-1"}, b"short")

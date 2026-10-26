@@ -165,6 +165,20 @@ class ConnectorSocketServiceTests(unittest.TestCase):
         key_loader.assert_not_called()
         sign.assert_not_called()
 
+    def test_unexpected_credential_lookup_error_fails_closed(self):
+        key_loader = Mock(return_value=self.key)
+
+        with patch("agentguard.connector_service.read_and_sign_booking") as sign:
+            response, _, _ = self.request(
+                b'{"action_id":"booking-service-1"}\n',
+                peer_credential_loader=Mock(side_effect=OSError("unavailable")),
+                key_loader=key_loader,
+            )
+
+        self.assertEqual(response, {"error": "Peer authentication failed."})
+        key_loader.assert_not_called()
+        sign.assert_not_called()
+
     def test_keychain_load_failure_returns_error_without_signing(self):
         key_loader = Mock(side_effect=RuntimeError("denied"))
 
@@ -181,16 +195,21 @@ class ConnectorSocketServiceTests(unittest.TestCase):
         sign.assert_not_called()
 
     def test_empty_request_is_rejected_without_signing(self):
+        key_loader = Mock(return_value=self.key)
+
         with patch("agentguard.connector_service.read_and_sign_booking") as sign:
-            response, _, _ = self.request(None)
+            response, _, _ = self.request(None, key_loader=key_loader)
 
         self.assertEqual(response, {"error": "Request is empty"})
+        key_loader.assert_not_called()
         sign.assert_not_called()
 
     def test_empty_or_invalid_server_allowlist_fails_before_socket_creation(self):
         configurations = (
             (frozenset(), "Authorization policy is empty."),
             (frozenset({"   "}), "Authorization policy is invalid."),
+            (frozenset({" booking-service-1 "}), "Authorization policy is invalid."),
+            ({"booking-service-1"}, "Authorization policy must be immutable."),
         )
 
         for allowed_action_ids, message in configurations:
@@ -206,6 +225,50 @@ class ConnectorSocketServiceTests(unittest.TestCase):
                     serve_once(self.base_path / "not-used.sock", config)
 
                 create_server.assert_not_called()
+
+    def test_invalid_request_timeout_fails_before_socket_creation(self):
+        with patch("agentguard.connector_service.create_unix_server") as create_server:
+            config = replace(self.config, request_timeout_seconds=0)
+
+            with self.assertRaisesRegex(
+                ServiceConfigurationError,
+                "Request timeout must be a positive duration.",
+            ):
+                serve_once(self.base_path / "not-used.sock", config)
+
+        create_server.assert_not_called()
+
+    def test_request_timeout_rejects_idle_authorized_peer_before_key_load(self):
+        server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        errors = []
+        key_loader = Mock(return_value=self.key)
+        config = replace(self.config, request_timeout_seconds=0.01)
+
+        def serve():
+            try:
+                handle_connection(
+                    server,
+                    config,
+                    peer_credential_loader=Mock(return_value=self.approved_peer),
+                    key_loader=key_loader,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                server.close()
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        try:
+            response = json.loads(client.recv(4096).decode("utf-8"))
+        finally:
+            client.close()
+
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive(), "service thread did not finish")
+        self.assertFalse(errors)
+        self.assertEqual(response, {"error": "Request timed out."})
+        key_loader.assert_not_called()
 
     def test_oversized_multibyte_request_is_rejected_by_byte_limit(self):
         payload = "é".encode("utf-8") * 513
@@ -261,8 +324,9 @@ class ConnectorSocketServiceTests(unittest.TestCase):
         for payload, message in requests:
             with self.subTest(payload=payload[:20]):
                 with patch("agentguard.connector_service.read_and_sign_booking") as sign:
-                    response, _, _ = self.request(payload)
+                    response, _, key_loader = self.request(payload)
                 self.assertEqual(response, {"error": message})
+                key_loader.assert_not_called()
                 sign.assert_not_called()
 
     def test_client_cannot_select_server_configuration(self):

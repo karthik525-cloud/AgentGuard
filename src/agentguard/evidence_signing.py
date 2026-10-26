@@ -18,6 +18,7 @@ def _canonical_bytes(payload: dict[str, Any]) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -54,9 +55,12 @@ def verify_signed_evidence(
     if not isinstance(payload, dict) or not isinstance(signature, str):
         return False
 
-    expected = hmac.new(
-        secret_key, _canonical_bytes(payload), hashlib.sha256
-    ).hexdigest()
+    try:
+        expected = hmac.new(
+            secret_key, _canonical_bytes(payload), hashlib.sha256
+        ).hexdigest()
+    except (OverflowError, RecursionError, TypeError, ValueError, UnicodeError):
+        return False
     return hmac.compare_digest(expected, signature)
 
 

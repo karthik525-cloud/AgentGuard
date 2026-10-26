@@ -8,6 +8,19 @@ DEFAULT_SERVICE = "AgentGuard.SigningKey"
 DEFAULT_ACCOUNT = "agentguard-connector"
 
 
+def _run_security(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run macOS's Keychain utility without exposing its output to callers."""
+    try:
+        return subprocess.run(
+            ["/usr/bin/security", *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError("macOS Keychain utility is unavailable.") from exc
+
+
 def store_key(
     secret_key: bytes,
     service: str = DEFAULT_SERVICE,
@@ -17,25 +30,18 @@ def store_key(
     if not isinstance(secret_key, bytes) or len(secret_key) < 32:
         raise ValueError("secret_key must contain at least 32 bytes")
 
-    result = subprocess.run(
+    result = _run_security(
         [
-            "/usr/bin/security",
             "add-generic-password",
             "-U",
             "-a", account,
             "-s", service,
             "-w", secret_key.hex(),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
+        ]
     )
 
     if result.returncode != 0:
-        raise RuntimeError(
-            "Could not store the key in macOS Keychain: "
-            + result.stderr.strip()
-        )
+        raise RuntimeError("Could not store the key in macOS Keychain.")
 
 
 def load_key(
@@ -43,17 +49,13 @@ def load_key(
     account: str = DEFAULT_ACCOUNT,
 ) -> bytes:
     """Load a signing key from the user's default macOS Keychain."""
-    result = subprocess.run(
+    result = _run_security(
         [
-            "/usr/bin/security",
             "find-generic-password",
             "-a", account,
             "-s", service,
             "-w",
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
+        ]
     )
 
     if result.returncode != 0:
@@ -77,19 +79,13 @@ def delete_key(
     account: str = DEFAULT_ACCOUNT,
 ) -> None:
     """Delete a signing key from the user's default macOS Keychain."""
-    result = subprocess.run(
+    result = _run_security(
         [
-            "/usr/bin/security",
             "delete-generic-password",
             "-a", account,
             "-s", service,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
+        ]
     )
 
     if result.returncode != 0:
-        raise RuntimeError(
-            "Could not delete the Keychain item: " + result.stderr.strip()
-        )
+        raise RuntimeError("Could not delete the Keychain item.")

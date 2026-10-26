@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import math
 import os
 import socket
+import sqlite3
 import stat
 import struct
 import sys
@@ -15,6 +17,7 @@ from .keychain_store import DEFAULT_ACCOUNT, DEFAULT_SERVICE, load_key
 from .trusted_connector import read_and_sign_booking
 
 MAX_REQUEST_BYTES = 1024
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
 _XUCRED = struct.Struct("=IIh2x16I")
 _SOL_LOCAL = 0
 
@@ -45,6 +48,7 @@ class ConnectorServiceConfig:
     approved_gid: int
     keychain_service: str = DEFAULT_SERVICE
     keychain_account: str = DEFAULT_ACCOUNT
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
 def _parse_darwin_peer_credentials(raw: bytes) -> PeerCredentials:
@@ -77,15 +81,34 @@ def get_peer_credentials(connection: socket.socket) -> PeerCredentials:
 
 
 def _validate_config(config: ConnectorServiceConfig) -> None:
+    if not isinstance(config.allowed_action_ids, frozenset):
+        raise ServiceConfigurationError("Authorization policy must be immutable.")
     if not config.allowed_action_ids:
         raise ServiceConfigurationError("Authorization policy is empty.")
     if any(
-        not isinstance(action_id, str) or not action_id.strip()
+        not isinstance(action_id, str)
+        or not action_id.strip()
+        or action_id != action_id.strip()
+        or len(action_id) > 200
         for action_id in config.allowed_action_ids
     ):
         raise ServiceConfigurationError("Authorization policy is invalid.")
-    if config.approved_uid < 0 or config.approved_gid < 0:
+    if (
+        not isinstance(config.approved_uid, int)
+        or isinstance(config.approved_uid, bool)
+        or not isinstance(config.approved_gid, int)
+        or isinstance(config.approved_gid, bool)
+        or config.approved_uid < 0
+        or config.approved_gid < 0
+    ):
         raise ServiceConfigurationError("Approved peer identity is invalid.")
+    if (
+        not isinstance(config.request_timeout_seconds, (int, float))
+        or isinstance(config.request_timeout_seconds, bool)
+        or not math.isfinite(config.request_timeout_seconds)
+        or config.request_timeout_seconds <= 0
+    ):
+        raise ServiceConfigurationError("Request timeout must be a positive duration.")
 
 
 def _ensure_service_directory(directory: Path) -> None:
@@ -161,11 +184,10 @@ def _read_request(connection: socket.socket) -> bytes:
     return bytes(request)
 
 
-def _process_request(
+def _validate_request(
     request_bytes: bytes,
     config: ConnectorServiceConfig,
-    secret_key: bytes,
-) -> dict[str, object]:
+) -> str:
     try:
         request = json.loads(request_bytes)
     except json.JSONDecodeError as exc:
@@ -188,18 +210,19 @@ def _process_request(
         )
     if action_id not in config.allowed_action_ids:
         raise PermissionError("Request is not authorized for this action.")
-
-    envelope = read_and_sign_booking(
-        config.db_path,
-        action_id,
-        secret_key,
-        allowed_action_ids=config.allowed_action_ids,
-    )
-    return {"found": envelope is not None, "envelope": envelope}
+    return action_id
 
 
 def _send(connection: socket.socket, payload: dict[str, object]) -> None:
     connection.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+
+
+def _send_error(connection: socket.socket, message: str) -> None:
+    """Best-effort error response for a peer that may have already disconnected."""
+    try:
+        _send(connection, {"error": message})
+    except OSError:
+        pass
 
 
 def handle_connection(
@@ -217,8 +240,24 @@ def handle_connection(
             or config.approved_gid not in credentials.gids
         ):
             raise PeerAuthenticationError("Peer is not authorized.")
-    except PeerAuthenticationError:
-        _send(connection, {"error": "Peer authentication failed."})
+    except Exception:
+        _send_error(connection, "Peer authentication failed.")
+        return
+
+    try:
+        connection.settimeout(config.request_timeout_seconds)
+        action_id = _validate_request(_read_request(connection), config)
+    except socket.timeout:
+        _send_error(connection, "Request timed out.")
+        return
+    except PermissionError:
+        _send_error(connection, "Request is not authorized for this action.")
+        return
+    except ValueError as exc:
+        _send_error(connection, str(exc))
+        return
+    except (TypeError, OSError):
+        _send_error(connection, "Request could not be processed.")
         return
 
     try:
@@ -226,17 +265,22 @@ def handle_connection(
             service=config.keychain_service,
             account=config.keychain_account,
         )
-    except RuntimeError:
-        _send(connection, {"error": "Could not load signing key from Keychain."})
+    except Exception:
+        _send_error(connection, "Could not load signing key from Keychain.")
         return
 
     try:
-        response = _process_request(_read_request(connection), config, secret_key)
-    except PermissionError:
-        response = {"error": "Request is not authorized for this action."}
-    except (ValueError, TypeError, OSError) as exc:
-        response = {"error": str(exc)}
-    _send(connection, response)
+        envelope = read_and_sign_booking(
+            config.db_path,
+            action_id,
+            secret_key,
+            allowed_action_ids=config.allowed_action_ids,
+        )
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        _send_error(connection, "Could not read booking evidence.")
+        return
+
+    _send(connection, {"found": envelope is not None, "envelope": envelope})
 
 
 def serve_once(

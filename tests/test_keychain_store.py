@@ -67,15 +67,36 @@ class KeychainStoreTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     load_key()
 
-    def test_delete_key_reports_security_tool_failure(self):
-        completed = subprocess.CompletedProcess([], 1, "", "denied")
+    def test_keychain_tool_errors_do_not_expose_stderr(self):
+        completed = subprocess.CompletedProcess([], 1, "", "sensitive diagnostic")
 
+        for operation, expected_message in (
+            (
+                lambda: store_key(b"a" * 32, "test-service", "test-account"),
+                "Could not store the key in macOS Keychain.",
+            ),
+            (
+                lambda: delete_key("test-service", "test-account"),
+                "Could not delete the Keychain item.",
+            ),
+        ):
+            with self.subTest(expected_message=expected_message), patch(
+                "agentguard.keychain_store.subprocess.run",
+                return_value=completed,
+            ):
+                with self.assertRaisesRegex(RuntimeError, expected_message) as error:
+                    operation()
+            self.assertNotIn("sensitive diagnostic", str(error.exception))
+
+    def test_missing_keychain_utility_is_reported_without_os_error_details(self):
         with patch(
             "agentguard.keychain_store.subprocess.run",
-            return_value=completed,
+            side_effect=FileNotFoundError("sensitive local path"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "denied"):
-                delete_key(service="test-service", account="test-account")
+            with self.assertRaisesRegex(RuntimeError, "utility is unavailable") as error:
+                load_key()
+
+        self.assertNotIn("sensitive local path", str(error.exception))
 
 
 if __name__ == "__main__":
