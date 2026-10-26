@@ -18,7 +18,8 @@ def read_and_sign_booking(
     """Read and sign booking evidence after checking an optional allowlist.
 
     The allowlist must come from trusted policy, not from an AI agent request.
-    This prototype does not authenticate the caller.
+    The local socket service authenticates its caller before invoking this
+    function. Direct callers must enforce an equivalent trusted boundary.
     """
     if not isinstance(action_id, str) or not action_id.strip():
         raise ValueError("action_id must be a non-empty string")

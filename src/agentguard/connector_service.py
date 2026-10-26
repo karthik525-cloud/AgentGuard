@@ -1,118 +1,309 @@
+"""Authenticated local Unix-domain socket connector service for AgentGuard."""
 
-"""Local connector service for AgentGuard."""
-
+import argparse
 import json
 import os
+import socket
+import stat
+import struct
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, FrozenSet
 
-from .keychain_store import (
-    DEFAULT_ACCOUNT,
-    DEFAULT_SERVICE,
-    load_key,
-)
+from .keychain_store import DEFAULT_ACCOUNT, DEFAULT_SERVICE, load_key
 from .trusted_connector import read_and_sign_booking
 
 MAX_REQUEST_BYTES = 1024
+_XUCRED = struct.Struct("=IIh2x16I")
+_SOL_LOCAL = 0
 
 
-def emit_error(message: str, exit_code: int) -> int:
-    print(json.dumps({"error": message}), file=sys.stderr)
-    return exit_code
+class PeerAuthenticationError(RuntimeError):
+    """Raised when a Unix-domain peer cannot be authenticated safely."""
+
+
+class ServiceConfigurationError(RuntimeError):
+    """Raised when the local connector service is not safely configured."""
+
+
+@dataclass(frozen=True)
+class PeerCredentials:
+    """Effective macOS credentials captured when a peer connects."""
+
+    uid: int
+    gids: FrozenSet[int]
+
+
+@dataclass(frozen=True)
+class ConnectorServiceConfig:
+    """Trusted server-side configuration; clients cannot override these values."""
+
+    db_path: Path
+    allowed_action_ids: FrozenSet[str]
+    approved_uid: int
+    approved_gid: int
+    keychain_service: str = DEFAULT_SERVICE
+    keychain_account: str = DEFAULT_ACCOUNT
+
+
+def _parse_darwin_peer_credentials(raw: bytes) -> PeerCredentials:
+    """Decode Darwin's documented ``struct xucred`` representation."""
+    if len(raw) != _XUCRED.size:
+        raise PeerAuthenticationError("Peer credentials had an unexpected size.")
+
+    version, uid, group_count, *groups = _XUCRED.unpack(raw)
+    if version != 0 or group_count < 0 or group_count > len(groups):
+        raise PeerAuthenticationError("Peer credentials were invalid.")
+
+    return PeerCredentials(uid=uid, gids=frozenset(groups[:group_count]))
+
+
+def get_peer_credentials(connection: socket.socket) -> PeerCredentials:
+    """Return Darwin peer credentials or fail closed on unsupported platforms."""
+    if sys.platform != "darwin" or not hasattr(socket, "LOCAL_PEERCRED"):
+        raise PeerAuthenticationError("Peer credentials are unavailable.")
+
+    try:
+        raw = connection.getsockopt(
+            _SOL_LOCAL,
+            socket.LOCAL_PEERCRED,
+            _XUCRED.size,
+        )
+    except OSError as exc:
+        raise PeerAuthenticationError("Could not obtain peer credentials.") from exc
+
+    return _parse_darwin_peer_credentials(raw)
+
+
+def _validate_config(config: ConnectorServiceConfig) -> None:
+    if not config.allowed_action_ids:
+        raise ServiceConfigurationError("Authorization policy is empty.")
+    if any(
+        not isinstance(action_id, str) or not action_id.strip()
+        for action_id in config.allowed_action_ids
+    ):
+        raise ServiceConfigurationError("Authorization policy is invalid.")
+    if config.approved_uid < 0 or config.approved_gid < 0:
+        raise ServiceConfigurationError("Approved peer identity is invalid.")
+
+
+def _ensure_service_directory(directory: Path) -> None:
+    try:
+        details = os.lstat(directory)
+    except FileNotFoundError:
+        directory.mkdir(mode=0o700)
+        details = os.lstat(directory)
+
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or stat.S_ISLNK(details.st_mode)
+        or details.st_uid != os.geteuid()
+        or details.st_mode & 0o077
+    ):
+        raise ServiceConfigurationError(
+            "Socket directory must be service-owned and mode 0700."
+        )
+
+    os.chmod(directory, 0o700)
+
+
+def _remove_stale_socket(socket_path: Path) -> None:
+    try:
+        details = os.lstat(socket_path)
+    except FileNotFoundError:
+        return
+
+    if not stat.S_ISSOCK(details.st_mode) or details.st_uid != os.geteuid():
+        raise ServiceConfigurationError(
+            "Refusing to replace a non-service socket path."
+        )
+
+    socket_path.unlink()
+
+
+def create_unix_server(socket_path: str | Path) -> socket.socket:
+    """Create a service-owned Unix socket without replacing arbitrary files."""
+    path = Path(socket_path)
+    _ensure_service_directory(path.parent)
+    _remove_stale_socket(path)
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(path))
+        os.chmod(path, 0o600)
+        server.listen()
+    except BaseException:
+        server.close()
+        raise
+    return server
+
+
+def _read_request(connection: socket.socket) -> bytes:
+    request = bytearray()
+    while len(request) <= MAX_REQUEST_BYTES:
+        chunk = connection.recv(MAX_REQUEST_BYTES + 1 - len(request))
+        if not chunk:
+            break
+        request.extend(chunk)
+        if b"\n" in chunk:
+            break
+
+    if not request:
+        raise ValueError("Request is empty")
+    if len(request) > MAX_REQUEST_BYTES:
+        raise ValueError("Request exceeds the size limit")
+    if b"\n" in request:
+        line, trailing = bytes(request).split(b"\n", 1)
+        if trailing:
+            raise ValueError("Request must contain one JSON object")
+        return line
+    return bytes(request)
+
+
+def _process_request(
+    request_bytes: bytes,
+    config: ConnectorServiceConfig,
+    secret_key: bytes,
+) -> dict[str, object]:
+    try:
+        request = json.loads(request_bytes)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Request contains invalid JSON.") from exc
+
+    if not isinstance(request, dict):
+        raise ValueError("Request must be a JSON object")
+    if set(request) != {"action_id"}:
+        raise ValueError("Request must contain only the action_id field")
+
+    action_id = request.get("action_id")
+    if (
+        not isinstance(action_id, str)
+        or not action_id
+        or action_id != action_id.strip()
+        or len(action_id) > 200
+    ):
+        raise ValueError(
+            "action_id must be a non-empty string of at most 200 characters"
+        )
+    if action_id not in config.allowed_action_ids:
+        raise PermissionError("Request is not authorized for this action.")
+
+    envelope = read_and_sign_booking(
+        config.db_path,
+        action_id,
+        secret_key,
+        allowed_action_ids=config.allowed_action_ids,
+    )
+    return {"found": envelope is not None, "envelope": envelope}
+
+
+def _send(connection: socket.socket, payload: dict[str, object]) -> None:
+    connection.sendall(json.dumps(payload).encode("utf-8") + b"\n")
+
+
+def handle_connection(
+    connection: socket.socket,
+    config: ConnectorServiceConfig,
+    *,
+    peer_credential_loader: Callable[[socket.socket], PeerCredentials] = get_peer_credentials,
+    key_loader: Callable[..., bytes] = load_key,
+) -> None:
+    """Authenticate a peer before reading, parsing, or signing its request."""
+    try:
+        credentials = peer_credential_loader(connection)
+        if (
+            credentials.uid != config.approved_uid
+            or config.approved_gid not in credentials.gids
+        ):
+            raise PeerAuthenticationError("Peer is not authorized.")
+    except PeerAuthenticationError:
+        _send(connection, {"error": "Peer authentication failed."})
+        return
+
+    try:
+        secret_key = key_loader(
+            service=config.keychain_service,
+            account=config.keychain_account,
+        )
+    except RuntimeError:
+        _send(connection, {"error": "Could not load signing key from Keychain."})
+        return
+
+    try:
+        response = _process_request(_read_request(connection), config, secret_key)
+    except PermissionError:
+        response = {"error": "Request is not authorized for this action."}
+    except (ValueError, TypeError, OSError) as exc:
+        response = {"error": str(exc)}
+    _send(connection, response)
+
+
+def serve_once(
+    socket_path: str | Path,
+    config: ConnectorServiceConfig,
+    *,
+    peer_credential_loader: Callable[[socket.socket], PeerCredentials] = get_peer_credentials,
+    key_loader: Callable[..., bytes] = load_key,
+) -> None:
+    """Serve one authenticated request; intended for controlled integration use."""
+    _validate_config(config)
+    server = create_unix_server(socket_path)
+    try:
+        connection, _ = server.accept()
+        with connection:
+            handle_connection(
+                connection,
+                config,
+                peer_credential_loader=peer_credential_loader,
+                key_loader=key_loader,
+            )
+    finally:
+        server.close()
+        _remove_stale_socket(Path(socket_path))
+
+
+def serve_forever(socket_path: str | Path, config: ConnectorServiceConfig) -> None:
+    """Run the authenticated local service until interrupted by its supervisor."""
+    _validate_config(config)
+    server = create_unix_server(socket_path)
+    try:
+        while True:
+            connection, _ = server.accept()
+            with connection:
+                handle_connection(connection, config)
+    finally:
+        server.close()
+        _remove_stale_socket(Path(socket_path))
 
 
 def main() -> int:
-    db_path = os.environ.get("AGENTGUARD_DB_PATH")
-    service = os.environ.get(
-        "AGENTGUARD_KEYCHAIN_SERVICE", DEFAULT_SERVICE
+    parser = argparse.ArgumentParser(
+        description="Run the authenticated AgentGuard local connector service."
     )
-    account = os.environ.get(
-        "AGENTGUARD_KEYCHAIN_ACCOUNT", DEFAULT_ACCOUNT
+    parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--db", required=True, type=Path)
+    parser.add_argument("--allow-action", action="append", required=True)
+    parser.add_argument("--approved-uid", required=True, type=int)
+    parser.add_argument("--approved-gid", required=True, type=int)
+    parser.add_argument("--keychain-service", default=DEFAULT_SERVICE)
+    parser.add_argument("--keychain-account", default=DEFAULT_ACCOUNT)
+    args = parser.parse_args()
+
+    config = ConnectorServiceConfig(
+        db_path=args.db,
+        allowed_action_ids=frozenset(args.allow_action),
+        approved_uid=args.approved_uid,
+        approved_gid=args.approved_gid,
+        keychain_service=args.keychain_service,
+        keychain_account=args.keychain_account,
     )
-
-    configured_actions = os.environ.get(
-        "AGENTGUARD_ALLOWED_ACTION_IDS"
-    )
-
-    if not configured_actions:
-        return emit_error("Authorization policy is missing.", 2)
-
-    allowed_action_ids = {
-        item.strip()
-        for item in configured_actions.split(",")
-        if item.strip()
-    }
-
-    if not allowed_action_ids:
-        return emit_error("Authorization policy is empty.", 2)
-
-    if not db_path:
-        return emit_error("Database configuration is missing.", 2)
-
     try:
-        secret_key = load_key(service=service, account=account)
-    except RuntimeError:
-        return emit_error(
-            "Could not load signing key from Keychain.", 2
-        )
-
-    try:
-        request_bytes = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
-
-        if not request_bytes:
-            raise ValueError("Request is empty")
-
-        if len(request_bytes) > MAX_REQUEST_BYTES:
-            raise ValueError("Request exceeds the size limit")
-
-        request = json.loads(request_bytes)
-
-        if not isinstance(request, dict):
-            raise ValueError("Request must be a JSON object")
-
-        if set(request) != {"action_id"}:
-            raise ValueError(
-                "Request must contain only the action_id field"
-            )
-
-        action_id = request.get("action_id")
-
-        if (
-            not isinstance(action_id, str)
-            or not action_id
-            or action_id != action_id.strip()
-            or len(action_id) > 200
-        ):
-            raise ValueError(
-                "action_id must be a non-empty string of at most 200 characters"
-            )
-
-        if action_id not in allowed_action_ids:
-            return emit_error(
-                "Request is not authorized for this action.", 1
-            )
-
-        envelope = read_and_sign_booking(
-            Path(db_path),
-            action_id,
-            secret_key,
-            allowed_action_ids=allowed_action_ids,
-        )
-
-        print(json.dumps({
-            "found": envelope is not None,
-            "envelope": envelope,
-        }))
-        return 0
-
-    except json.JSONDecodeError:
-        return emit_error("Request contains invalid JSON.", 1)
-    except PermissionError:
-        return emit_error(
-            "Request is not authorized for this action.", 1
-        )
-    except (ValueError, TypeError, OSError) as exc:
-        return emit_error(str(exc), 1)
+        serve_forever(args.socket, config)
+    except (OSError, ServiceConfigurationError, ValueError) as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

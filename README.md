@@ -34,3 +34,18 @@ boundary. The `trusted` and `independent` fields must be populated by
 authenticated integrations that AgentGuard controls. An agent must not be
 allowed to certify its own evidence. Real connectors, identity verification,
 tamper-resistant audit logs, and deployment hardening remain future work.
+
+## Local connector service
+
+The connector service accepts requests only over a Unix-domain socket. Its
+database, Keychain item, allowlist, and approved peer UID/GID are server-side
+startup configuration; clients provide only an action ID. On macOS, the
+service checks `LOCAL_PEERCRED` before reading a request and uses a
+service-owned `0700` socket directory with a `0600` socket.
+
+This protects against different local OS identities when the service is
+launched with trusted configuration. It does **not** protect against a
+malicious process running as the same macOS UID as an approved client: such a
+process has the same filesystem and peer-credential identity. A dedicated
+service/client identity or code-signing identity verification is required for
+that threat model.
