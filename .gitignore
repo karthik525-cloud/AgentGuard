@@ -10,4 +10,3 @@ venv/
 # Generated Python build artifacts
 dist/
 build/
-*.egg-info/
