@@ -1,6 +1,14 @@
 """Public API for AgentGuard."""
 
 from .core import EvidenceRecord, Verdict, verify_claim
+from .agent_integration import (
+    AuditEvent,
+    AuditSink,
+    EvidenceProvider,
+    InMemoryAuditLog,
+    SQLiteBookingEvidenceProvider,
+    verify_agent_claim,
+)
 from .evidence_signing import (
     sign_evidence,
     verify_signed_evidence,
@@ -18,6 +26,12 @@ __all__ = [
     "EvidenceRecord",
     "Verdict",
     "verify_claim",
+    "AuditEvent",
+    "AuditSink",
+    "EvidenceProvider",
+    "InMemoryAuditLog",
+    "SQLiteBookingEvidenceProvider",
+    "verify_agent_claim",
     "sign_evidence",
     "verify_signed_evidence",
     "verify_signed_claim",

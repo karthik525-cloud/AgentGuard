@@ -44,6 +44,24 @@ PYTHONPATH=src python3 -m agentguard.cli examples/demo.json
 It deliberately exits with status `1`, because the scenario's verdict is
 `FAILED`.
 
+## Tool-using agent demonstration
+
+The framework-free adapter demonstrates the intended integration boundary: a
+deterministic mock agent proposes a `confirmed` result, while a controlled
+local tool database independently reports `failed`. AgentGuard returns
+`FAILED` and emits safe structured audit metadata. It is a simulation, not an
+LLM or external-tool integration.
+
+```bash
+PYTHONPATH=src python3 examples/agent_tool_demo.py
+```
+
+Run the core success, false-claim, tampering, and one-time replay scenarios:
+
+```bash
+PYTHONPATH=src python3 examples/security_scenarios.py
+```
+
 ## Architecture
 
 ```text
@@ -68,6 +86,9 @@ one-time protected operation ─> verify_and_consume_claim
   only trusted server-side allowlisted actions.
 - `connector_service.py` exposes that connector over a local Unix-domain
   socket on macOS, with peer-credential authorization.
+- `agent_integration.py` defines a small `EvidenceProvider` adapter and an
+  optional audit sink for tool-using-agent workflows without requiring an LLM
+  framework.
 
 Missing, unavailable, or corrupt SQLite evidence is treated as absent and
 therefore yields `INCONCLUSIVE`; it never produces a false `VERIFIED` verdict.
@@ -94,6 +115,23 @@ An HMAC proves integrity relative to the protected signing key. It does
 **not** prove that the underlying database record or any external event is
 true. The evidence source, connector process, and key custody remain part of
 the trust boundary.
+
+### Agent integration and audit events
+
+`verify_agent_claim()` obtains evidence through a trusted `EvidenceProvider`,
+not from the agent's own narrative. The included
+`SQLiteBookingEvidenceProvider` is a deterministic local demonstration.
+`InMemoryAuditLog` records UUID4 event IDs, UTC timestamps, action IDs when
+valid, verdicts, and fixed reason codes. It never receives signing keys or
+full evidence payloads, and failures in an audit sink cannot change a
+verification result. It is not tamper-proof storage; production deployments
+need an access-controlled, durable audit system.
+
+The test suite demonstrates false agent success claims, missing and
+conflicting evidence, tampered/expired/future evidence, replay rejection,
+action mismatch, malformed requests, unauthorized socket peers, and audit
+failure handling. These tests show AgentGuard fails closed under those inputs;
+they do not establish that an evidence source is truthful.
 
 ### Local connector service (macOS)
 

@@ -68,6 +68,25 @@ def _read_booking_row(
         return None
 
 
+def get_booking_evidence(
+    db_path: str | Path,
+    action_id: str,
+) -> EvidenceRecord | None:
+    """Return independently read booking evidence, if it is available."""
+    if not isinstance(action_id, str) or not action_id.strip():
+        raise ValueError("action_id must be a non-empty string")
+
+    row = _read_booking_row(db_path, action_id)
+    if row is None:
+        return None
+    return EvidenceRecord(
+        action_id=row[0],
+        record_id=row[1],
+        observed_state=row[2],
+        source="sqlite-booking-database",
+    )
+
+
 def verify_from_sqlite(
     claim: dict[str, Any],
     db_path: str | Path,
@@ -77,17 +96,10 @@ def verify_from_sqlite(
     if not isinstance(action_id, str) or not action_id.strip():
         raise ValueError("claim requires a non-empty action_id")
 
-    evidence: list[EvidenceRecord] = []
-    row = _read_booking_row(db_path, action_id)
-    if row:
-        evidence.append(
-            EvidenceRecord(
-                action_id=row[0],
-                record_id=row[1],
-                observed_state=row[2],
-                source="sqlite-booking-database",
-            )
-        )
+    evidence = []
+    record = get_booking_evidence(db_path, action_id)
+    if record is not None:
+        evidence.append(record)
 
     return verify_claim(claim, evidence)
 
